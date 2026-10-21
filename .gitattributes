@@ -2,3 +2,4 @@
 # Fixtures precisam ficar byte a byte (PDF binário; OFX em Windows-1252/CRLF)
 *.pdf binary
 *.ofx binary
+*.bat text eol=crlf
