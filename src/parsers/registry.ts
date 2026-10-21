@@ -1,0 +1,43 @@
+/**
+ * Registro de parsers por banco. Para adicionar um banco, crie um arquivo em
+ * `parsers/banks/` e registre-o na lista abaixo (veja o README).
+ */
+import { genericParser } from './generic';
+import { detectBank } from './metadata';
+import { itauParser } from './banks/itau';
+import { nubankParser } from './banks/nubank';
+import type { BankParser, ParseInput, ParseResult } from './types';
+
+const parsers: BankParser[] = [nubankParser, itauParser, genericParser];
+
+export function registerParser(p: BankParser): void {
+  const i = parsers.findIndex((x) => x.id === p.id);
+  if (i >= 0) parsers[i] = p;
+  else parsers.unshift(p);
+}
+
+export function getParsers(): readonly BankParser[] {
+  return parsers;
+}
+
+/** Escolhe o parser de maior pontuação (ou o indicado) e processa o documento. */
+export function parseStatement(input: ParseInput, parserId?: string): ParseResult {
+  if (parserId) {
+    const chosen = parsers.find((p) => p.id === parserId);
+    if (chosen) return chosen.parse(input);
+  }
+  const code = detectBank(input.lines.map((l) => l.text))?.code;
+  let best = genericParser;
+  let bestScore = -1;
+  for (const p of parsers) {
+    const s = p.detect(input, code);
+    if (s > bestScore) [best, bestScore] = [p, s];
+  }
+  const result = best.parse(input);
+  // Se o parser específico não achou nada, tenta o genérico.
+  if (result.statement.transactions.length === 0 && best !== genericParser) {
+    const fallback = genericParser.parse(input);
+    if (fallback.statement.transactions.length > 0) return fallback;
+  }
+  return result;
+}

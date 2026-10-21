@@ -1,0 +1,24 @@
+CONVERSOR DE EXTRATOS PDF <-> OFX
+=================================
+
+Esta pasta contém o site completo em arquivos estáticos. Todo o processamento é
+feito no navegador: os extratos não são enviados a nenhum servidor.
+
+IMPORTANTE: não abra o index.html com dois cliques. O navegador bloqueia os
+scripts de páginas abertas direto do disco (file://). Sirva a pasta com um
+servidor local, usando UMA das opções abaixo, executada DENTRO desta pasta:
+
+  Com Node.js instalado (nodejs.org):
+      npx serve .
+      depois abra o endereço exibido (normalmente http://localhost:3000)
+
+  Com Python instalado:
+      python -m http.server 5199
+      depois abra http://localhost:5199
+
+A pasta também pode ser publicada em qualquer hospedagem de sites estáticos
+(servidor interno, GitHub Pages, Netlify etc.).
+
+Funciona offline depois de aberto. A exceção é o OCR (PDFs escaneados): na
+primeira vez em que for usado, ele precisa de internet para baixar o modelo de
+português (~15 MB).
