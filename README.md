@@ -1,5 +1,7 @@
 # Conversor de Extratos PDF ⇄ OFX
 
+**Use online:** https://isaacemr.github.io/conversor-extratos-pdf-ofx/ (os arquivos são processados no seu navegador e não são enviados a nenhum servidor).
+
 Aplicação web para profissionais de contabilidade e finanças que converte:
 
 1. **PDF → OFX**: extratos bancários em PDF viram arquivos OFX importáveis em sistemas contábeis e financeiros, com **revisão e edição obrigatórias** antes de exportar.
