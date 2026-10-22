@@ -4,11 +4,13 @@
  */
 import { genericParser } from './generic';
 import { detectBank } from './metadata';
+import { splitStatements } from './split';
+import { bbParser } from './banks/bb';
 import { itauParser } from './banks/itau';
 import { nubankParser } from './banks/nubank';
 import type { BankParser, ParseInput, ParseResult } from './types';
 
-const parsers: BankParser[] = [nubankParser, itauParser, genericParser];
+const parsers: BankParser[] = [bbParser, nubankParser, itauParser, genericParser];
 
 export function registerParser(p: BankParser): void {
   const i = parsers.findIndex((x) => x.id === p.id);
@@ -40,4 +42,15 @@ export function parseStatement(input: ParseInput, parserId?: string): ParseResul
     if (fallback.statement.transactions.length > 0) return fallback;
   }
   return result;
+}
+
+/**
+ * Processa um documento que pode conter vários extratos (contas diferentes num mesmo PDF).
+ * Retorna um resultado por extrato encontrado.
+ */
+export function parseDocument(input: ParseInput, parserId?: string): ParseResult[] {
+  const segments = splitStatements(input.lines);
+  const results = segments.map((lines) => parseStatement({ ...input, lines }, parserId));
+  const withTx = results.filter((r) => r.statement.transactions.length > 0);
+  return withTx.length ? withTx : results.slice(0, 1);
 }

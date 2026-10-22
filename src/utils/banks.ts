@@ -10,7 +10,7 @@ export interface BankInfo {
 }
 
 export const BANKS: BankInfo[] = [
-  { code: '001', name: 'Banco do Brasil', patterns: [/BANCO DO BRASIL/, /\bBB\.COM\.BR\b/] },
+  { code: '001', name: 'Banco do Brasil', patterns: [/BANCO DO BRASIL/, /\bBB\.COM\.BR\b/, /\bOUVIDORIA BB\b/, /\bBB RENDE FACIL\b/] },
   { code: '033', name: 'Santander', patterns: [/SANTANDER/] },
   { code: '104', name: 'Caixa Econômica Federal', patterns: [/CAIXA ECONOMICA/, /\bCAIXA\.GOV\.BR\b/] },
   { code: '237', name: 'Bradesco', patterns: [/BRADESCO/] },
@@ -30,7 +30,7 @@ export const BANKS: BankInfo[] = [
   { code: '290', name: 'PagBank (PagSeguro)', patterns: [/PAGSEGURO/, /PAGBANK/] },
   { code: '323', name: 'Mercado Pago', patterns: [/MERCADO PAGO/] },
   { code: '380', name: 'PicPay', patterns: [/PICPAY/] },
-  { code: '403', name: 'Cora', patterns: [/\bCORA SCD\b/, /\bCORA\b.*\bSOCIEDADE DE CREDITO/] },
+  { code: '403', name: 'Cora', patterns: [/\bCORA (SCD|SCFI)\b/, /\bCORA\b.*\bSOCIEDADE DE CREDITO/] },
   { code: '197', name: 'Stone', patterns: [/STONE (PAGAMENTOS|INSTITUICAO)/] },
   { code: '655', name: 'Banco Votorantim (BV)', patterns: [/BANCO VOTORANTIM/, /\bBANCO BV\b/] },
   { code: '637', name: 'Banco Sofisa', patterns: [/SOFISA/] },

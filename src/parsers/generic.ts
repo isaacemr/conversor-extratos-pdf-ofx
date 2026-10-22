@@ -20,8 +20,9 @@
 import type { TextLine, Word } from '../pdf/extract';
 import type { Statement, Transaction } from '../types';
 import { newId } from '../types';
-import { normalizeForMatch, parseBRAmountDetailed, parseBRDate, stripAccents, type DateContext } from '../utils/br-format';
+import { WEEKDAY_RE, normalizeForMatch, parseBRAmountDetailed, parseBRDate, stripAccents, type DateContext } from '../utils/br-format';
 import { detectMetadata } from './metadata';
+import { groupRows } from './rows';
 import type { BankParser, ParseInput, ParseResult, ParseStats } from './types';
 
 // ---------------------------------------------------------------------------
@@ -34,6 +35,8 @@ export interface GenericConfig {
   bankCode?: string;
   /** Linhas a ignorar (testadas contra a descrição normalizada: sem acento, maiúsculas). */
   ignore?: RegExp[];
+  /** Títulos de seções que não devem ser importadas (até o próximo cabeçalho de tabela). */
+  stop?: RegExp[];
   /** Padrões extras de linha de saldo anterior / saldo final. */
   openingBalance?: RegExp[];
   closingBalance?: RegExp[];
@@ -42,6 +45,8 @@ export interface GenericConfig {
   /** Palavras-chave extras para deduzir débito/crédito. */
   debitKeywords?: RegExp;
   creditKeywords?: RegExp;
+  /** Ajuste final da descrição de cada lançamento (ex.: remover códigos internos do banco). */
+  cleanDescription?: (description: string) => string;
 }
 
 const OPENING_RE = /^(SALDO|SDO)\.?\s*(ANTERIOR|INICIAL|EM CONTA ANTERIOR|DO MES ANTERIOR|DO PERIODO ANTERIOR)/;
@@ -57,7 +62,8 @@ const IGNORE_RE = [
   /^LIMITE\b/,
 ];
 /** Seções que não devem ser importadas (até o próximo cabeçalho de tabela). */
-const STOP_RE = /^(LANCAMENTOS FUTUROS|LANCAMENTOS AGENDADOS|AGENDAMENTOS|PROXIMOS LANCAMENTOS|DEMONSTRATIVO DE (INVESTIMENTOS|APLICACOES)|COMPRAS PARCELADAS - PROXIMAS)/;
+export const STOP_RE =
+  /^(LANCAMENTOS FUTUROS|LANCAMENTOS AGENDADOS|AGENDAMENTOS|PROXIMOS LANCAMENTOS|DEMONSTRATIVO DE (INVESTIMENTOS|APLICACOES)|COMPRAS PARCELADAS - PROXIMAS|RESUMO$|RESUMO DO PERIODO|ENCARGOS (VENCIDOS|A VENCER)|OUTRAS INFORMACOES|INFORMACOES DO COMPROVANTE|NOTAS EXPLICATIVAS)/;
 const DEFAULT_SECTIONS: Array<{ pattern: RegExp; sign: 1 | -1 }> = [
   { pattern: /^TOTAL DE (ENTRADAS|CREDITOS|RECEBIMENTOS)\b/, sign: 1 },
   { pattern: /^TOTAL DE (SAIDAS|DEBITOS|PAGAMENTOS)\b/, sign: -1 },
@@ -87,7 +93,7 @@ const HEADER_WORDS: Record<string, ColumnRole> = {
   HISTORICO: 'description', DESCRICAO: 'description', LANCAMENTO: 'description', LANCAMENTOS: 'description',
   ESPECIFICACAO: 'description', MOVIMENTACAO: 'description', MOVIMENTACOES: 'description', DETALHAMENTO: 'description',
   TRANSACAO: 'description', TRANSACOES: 'description', OPERACAO: 'description', DETALHES: 'description', HIST: 'description',
-  DOCUMENTO: 'doc', DOC: 'doc', DOCTO: 'doc', NDOC: 'doc', NRDOC: 'doc', NUMDOC: 'doc', REFERENCIA: 'doc', REF: 'doc', AUTENTICACAO: 'doc',
+  DOCUMENTO: 'doc', DOC: 'doc', DOCTO: 'doc', NDOC: 'doc', NRDOC: 'doc', NUMDOC: 'doc', REFERENCIA: 'doc', REF: 'doc', AUTENTICACAO: 'doc', ID: 'doc',
   VALOR: 'amount', VALORES: 'amount', MONTANTE: 'amount', QUANTIA: 'amount',
   DEBITO: 'debit', DEBITOS: 'debit', SAIDA: 'debit', SAIDAS: 'debit', RETIRADAS: 'debit',
   CREDITO: 'credit', CREDITOS: 'credit', ENTRADA: 'credit', ENTRADAS: 'credit',
@@ -120,8 +126,10 @@ export function detectHeader(line: TextLine): Column[] | null {
       matched++;
       continue;
     }
-    if (role) {
-      // "Débito/Crédito" ou "D/C" numa só palavra → coluna de indicador
+    if (role && prev && gap < 1.2 * line.h && role === 'description' && (prev.role === 'doc' || prev.role === 'description')) {
+      // "ID da operação", "Descrição da transação": um único título
+      prev.x1 = w.x1;
+    } else if (role) {
       cols.push({ role, x0: w.x0, x1: w.x1 });
       matched++;
     } else if (prev && gap < 1.2 * line.h) {
@@ -166,8 +174,9 @@ function nearestAmountColumn(x0: number, x1: number, cols: Column[]): ColumnRole
 // ---------------------------------------------------------------------------
 
 function leadingDate(words: Word[], h: number, ctx: DateContext): { date: string; consumed: number } | null {
-  if (!words.length || !/^\d/.test(words[0].text)) return null;
-  for (let k = Math.min(5, words.length); k >= 1; k--) {
+  if (!words.length) return null;
+  if (!/^\d/.test(words[0].text) && !WEEKDAY_RE.test(normalizeForMatch(words[0].text))) return null;
+  for (let k = Math.min(6, words.length); k >= 1; k--) {
     let ok = true;
     for (let i = 1; i < k; i++) if (words[i].x0 - words[i - 1].x1 > 1.5 * h) ok = false;
     if (!ok) continue;
@@ -224,10 +233,33 @@ function findAmounts(words: Word[], h: number): AmountToken[] {
 }
 
 function signFromIndicator(text: string): -1 | 1 | 0 {
-  const t = lettersOnly(text) || text.trim();
-  if (/^(D|DB|DEB|DEBITO|-)$/.test(t)) return -1;
-  if (/^(C|CR|CRED|CREDITO|\+)$/.test(t)) return 1;
+  const raw = text.trim();
+  if (raw === '(-)' || raw === '-') return -1;
+  if (raw === '(+)' || raw === '+') return 1;
+  const t = lettersOnly(raw);
+  if (/^(D|DB|DEB|DEBITO|SAIDA|DESPESA)$/.test(t)) return -1;
+  if (/^(C|CR|CRED|CREDITO|ENTRADA|RECEITA)$/.test(t)) return 1;
   return 0;
+}
+
+/**
+ * Posições rotuladas em linhas separadas (Stone): "Instituição  Agência  Conta" e, na linha
+ * de baixo, "Stone ...  0001  12345". Usado quando o texto corrido não revela a conta.
+ */
+export function labeledAccount(lines: TextLine[]): { branchId?: string; accountId?: string } {
+  for (let i = 0; i < Math.min(lines.length - 1, 60); i++) {
+    const l = lines[i];
+    if (l.words.some((w) => /\d/.test(w.text))) continue;
+    const ag = l.words.find((w) => lettersOnly(w.text) === 'AGENCIA');
+    const cc = l.words.find((w) => lettersOnly(w.text) === 'CONTA');
+    if (!ag || !cc) continue;
+    const next = lines[i + 1];
+    if (next.page !== l.page || next.y - l.y > 3 * l.h) continue;
+    const under = (label: Word) =>
+      next.words.find((w) => /^\d[\d.-]*[\dX]$/i.test(w.text) && w.x0 >= label.x0 - l.h && w.x0 <= label.x0 + 3 * l.h)?.text;
+    return { branchId: under(ag), accountId: under(cc)?.replace(/\./g, '') };
+  }
+  return {};
 }
 
 const signed = (t: AmountToken) => (t.sign === -1 ? -t.cents : t.cents);
@@ -286,8 +318,17 @@ export function resolveSigns(group: Transaction[], delta: number): number {
 }
 
 export function parseGeneric(input: ParseInput, cfg: GenericConfig): ParseResult {
-  const lines = input.lines;
-  const meta = detectMetadata(lines.map((l) => l.text));
+  const isBarrier = (l: TextLine) => {
+    const n = normalizeForMatch(l.text);
+    return detectHeader(l) !== null || STOP_RE.test(n) || (cfg.stop ?? []).some((r) => r.test(n));
+  };
+  const lines = groupRows(input.lines, isBarrier);
+  const meta = detectMetadata(input.lines.map((l) => l.text));
+  if (!meta.account.accountId) {
+    const lv = labeledAccount(input.lines);
+    meta.account.branchId ??= lv.branchId;
+    meta.account.accountId ??= lv.accountId;
+  }
   const ctx: DateContext = { start: meta.startDate, end: meta.endDate, year: meta.dominantYear };
   const ignore = [...IGNORE_RE, ...(cfg.ignore ?? [])];
   const sections = [...(cfg.sections ?? []), ...DEFAULT_SECTIONS];
@@ -295,9 +336,10 @@ export function parseGeneric(input: ParseInput, cfg: GenericConfig): ParseResult
   const isClosingStrong = (n: string) => CLOSING_STRONG_RE.test(n) || (cfg.closingBalance ?? []).some((r) => r.test(n));
 
   const stats: ParseStats = {
-    lines: lines.length,
+    lines: input.lines.length,
     balanceLines: 0,
-    continuationLines: 0,
+    // linhas absorvidas pela reconstrução de linhas de tabela (+ continuações abaixo)
+    continuationLines: input.lines.length - lines.length,
     signsResolvedByBalance: 0,
     headerFound: false,
   };
@@ -321,6 +363,11 @@ export function parseGeneric(input: ParseInput, cfg: GenericConfig): ParseResult
   let skipping = false;
   let last: { tx: Transaction; page: number; y: number; h: number; descX0: number; conts: number } | null = null;
   const events: Event[] = [];
+  /** Lançamentos cujo sinal veio só de palavra-chave. */
+  const keywordSigned = new Set<Transaction>();
+  /** Estilo de sinal do documento: "-1.234,56" / "-R$" versus "1.234,56 D/C". */
+  let minusStyle = 0;
+  let dcStyle = 0;
 
   lines.forEach((line, idx) => {
     if (headerCols.has(idx)) {
@@ -333,8 +380,10 @@ export function parseGeneric(input: ParseInput, cfg: GenericConfig): ParseResult
     const aboveHeader = headerAt.has(line.page) && idx < headerAt.get(line.page)!;
     const cols: Column[] | null = columns;
 
-    // 1. Data no início
-    let words = line.words;
+    // 1. Data no início. Com colunas conhecidas, descarta o que fica à esquerda da tabela
+    //    (ex.: legenda "D = débito a compensar" na mesma altura das linhas, no Itaú).
+    let words = cols ? line.words.filter((w) => w.x1 > cols[0].x0 - h) : line.words;
+    if (!words.length) return;
     let date: string | undefined;
     const dateCol = cols?.find((c) => c.role === 'date');
     const ld = leadingDate(words, h, ctx);
@@ -406,6 +455,17 @@ export function parseGeneric(input: ParseInput, cfg: GenericConfig): ParseResult
       }
       const firstAmountIdx = trailing.length ? trailing[0].i0 : words.length;
       const rest = words.slice(0, firstAmountIdx);
+      // Coluna de tipo sem cabeçalho: "... PIX RECEBIDO      CREDITO  R$ 1.232,81" (palavra isolada
+      // por um espaço largo logo antes do valor).
+      const typeW = rest[rest.length - 1];
+      const beforeType = rest[rest.length - 2];
+      if (valueTok && valueTok.sign === 0 && typeW && beforeType && typeW.x0 - beforeType.x1 > 2 * h) {
+        const ind = signFromIndicator(typeW.text);
+        if (ind && typeW.text.length > 1) {
+          dcSign = ind;
+          rest.pop();
+        }
+      }
       // Documento: número isolado logo antes dos valores, separado por um espaço largo.
       const lastW = rest[rest.length - 1];
       const prevW = rest[rest.length - 2];
@@ -422,18 +482,21 @@ export function parseGeneric(input: ParseInput, cfg: GenericConfig): ParseResult
       .replace(/\s+/g, ' ')
       .replace(/^[-–:|\s]+|[-–:|\s]+$/g, '')
       .trim();
-    const norm = normalizeForMatch(description);
+    // Para classificar, ignora códigos numéricos no início ("000 Saldo Anterior", "999 S A L D O",
+    // "00/00/0000 Saldo do dia").
+    const norm = normalizeForMatch(description).replace(/^([\d./-]+\s+)+/, '');
 
     // 3. Seções a pular
-    if (!valueTok && !balanceTok && STOP_RE.test(norm)) {
+    if (!valueTok && !balanceTok && (STOP_RE.test(norm) || (cfg.stop ?? []).some((r) => r.test(norm)))) {
       skipping = true;
       last = null;
       return;
     }
     if (skipping) return;
 
-    // 4. Marcadores de seção (Nubank: "Total de entradas"/"Total de saídas")
-    for (const s of sections) {
+    // 4. Marcadores de seção (Nubank: "Total de entradas"/"Total de saídas"). Quadros de
+    //    resumo acima da tabela ("Saídas: R$ ...") não definem seção.
+    for (const s of aboveHeader ? [] : sections) {
       if (s.pattern.test(norm)) {
         sectionSign = s.sign;
         break;
@@ -449,8 +512,9 @@ export function parseGeneric(input: ParseInput, cfg: GenericConfig): ParseResult
         let value = signed(tok);
         if (tok === balanceTok && balanceDc && tok.sign === 0) value = balanceDc * tok.cents;
         let kind: BalanceKind;
-        if (isOpening(norm)) kind = 'opening';
-        else if (BALANCE_NOT_LEDGER_RE.test(norm) || (cfg.ignore ?? []).some((r) => r.test(norm))) kind = 'info';
+        if ((cfg.ignore ?? []).some((r) => r.test(norm))) kind = 'info';
+        else if (isOpening(norm)) kind = 'opening';
+        else if (BALANCE_NOT_LEDGER_RE.test(norm)) kind = 'info';
         else if (isClosingStrong(norm)) kind = 'closingStrong';
         else kind = 'checkpoint';
         events.push({ kind, value });
@@ -494,12 +558,17 @@ export function parseGeneric(input: ParseInput, cfg: GenericConfig): ParseResult
     }
     if (!currentDate) return;
     if (!date && !description) return;
+    if (!date && valueTok.cents === 0) return; // linhas informativas "0,00" (quadros de resumo)
 
     // 8. Sinal
     let amount = valueTok.cents;
     let uncertain = false;
-    if (valueTok.sign !== 0) amount *= valueTok.sign;
-    else if (valueRole === 'debit') amount = -amount;
+    if (valueTok.sign !== 0) {
+      amount *= valueTok.sign;
+      const raw = words.slice(valueTok.i0, valueTok.i1 + 1).map((w) => w.text).join(' ');
+      if (/(D|C|DB|CR|\([+-]\))\s*$/i.test(raw)) dcStyle++;
+      else if (valueTok.sign === -1) minusStyle++;
+    } else if (valueRole === 'debit') amount = -amount;
     else if (valueRole === 'credit') amount = +amount;
     else if (dcSign) amount *= dcSign;
     else if (sectionSign) amount *= sectionSign;
@@ -525,9 +594,39 @@ export function parseGeneric(input: ParseInput, cfg: GenericConfig): ParseResult
     if (balanceTok) {
       tx.balance = balanceDc && balanceTok.sign === 0 ? balanceDc * balanceTok.cents : signed(balanceTok);
     }
+    if (uncertain) keywordSigned.add(tx);
     events.push({ kind: 'tx', tx });
     last = { tx, page: line.page, y: line.y, h, descX0: descWords[0]?.x0 ?? line.words[0].x0, conts: 0 };
   });
+
+  // Documento que marca débitos com "-" (e não usa D/C): valor sem sinal é crédito.
+  if (minusStyle > 0 && dcStyle === 0) {
+    for (const tx of keywordSigned) {
+      tx.amount = Math.abs(tx.amount);
+      tx.uncertain = false;
+    }
+  }
+
+  // Extratos do mais recente para o mais antigo (ex.: Stone): passa para a ordem cronológica.
+  const txEvents = events.flatMap((e) => (e.kind === 'tx' ? [e.tx] : []));
+  let asc = 0;
+  let desc = 0;
+  for (let i = 1; i < txEvents.length; i++) {
+    if (txEvents[i].date > txEvents[i - 1].date) asc++;
+    else if (txEvents[i].date < txEvents[i - 1].date) desc++;
+  }
+  if (desc > asc) {
+    events.reverse();
+    // Saldo inicial/final de resumo continuam no início/fim da cadeia.
+    const openings = events.filter((e) => e.kind === 'opening');
+    const closings = events.filter((e) => e.kind === 'closingStrong');
+    const middle = events.filter((e) => e.kind !== 'opening' && e.kind !== 'closingStrong');
+    events.splice(0, events.length, ...openings, ...middle, ...closings);
+  }
+
+  // Quando cada lançamento traz o próprio saldo, ele é a referência mais precisa; linhas de
+  // "saldo do dia" podem vir antes dos lançamentos do dia (Inter) e confundiriam a cadeia.
+  const perRowBalance = txEvents.length > 0 && txEvents.filter((t) => t.balance !== undefined).length / txEvents.length >= 0.6;
 
   // Pós-processamento: cadeia de saldos
   let prev: number | undefined;
@@ -561,11 +660,23 @@ export function parseGeneric(input: ParseInput, cfg: GenericConfig): ParseResult
     } else if (ev.kind === 'closingStrong') {
       closingStrong = ev.value;
       checkpoint(ev.value);
-    } else if (ev.kind === 'checkpoint') {
+    } else if (ev.kind === 'checkpoint' && !perRowBalance) {
       checkpoint(ev.value);
     }
   }
   const transactions = events.flatMap((e) => (e.kind === 'tx' ? [e.tx] : []));
+
+  // Descrição: "DOC.: 123" vira número do documento; ajustes específicos do banco.
+  for (const tx of transactions) {
+    tx.description = tx.description
+      .replace(/\s*\bDOC\.?\s*:\s*(\S+)/gi, (_, v: string) => {
+        if (/^\d[\d./-]*$/.test(v) && !tx.checkNum) tx.checkNum = v;
+        return '';
+      })
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (cfg.cleanDescription) tx.description = cfg.cleanDescription(tx.description);
+  }
   const closing = closingStrong ?? (group.length === 0 ? prev : undefined);
 
   const dates = transactions.map((t) => t.date).sort();
@@ -586,7 +697,11 @@ export function parseGeneric(input: ParseInput, cfg: GenericConfig): ParseResult
       `${unc} lançamento(s) sem indicação clara de crédito/débito — o tipo foi deduzido pela descrição. Confira os destacados.`,
     );
   }
-  if (!stats.headerFound && transactions.length > 0) {
+  const balanced =
+    statement.openingBalance !== undefined &&
+    statement.closingBalance !== undefined &&
+    statement.openingBalance + transactions.reduce((a, t) => a + t.amount, 0) === statement.closingBalance;
+  if (!stats.headerFound && transactions.length > 0 && !(balanced && unc === 0)) {
     warnings.push('Não encontramos o cabeçalho da tabela (Data/Histórico/Valor). As colunas foram deduzidas pela posição.');
   }
   if (input.ocr) warnings.push('Texto obtido por OCR: revise datas, valores e descrições com atenção.');

@@ -27,7 +27,8 @@ O build em `dist/` é estático (HTML/JS/CSS) e pode ser hospedado em qualquer s
 ## Funcionalidades
 
 ### PDF → OFX
-- Upload por arrastar e soltar ou seleção, com vários arquivos (combinados em um único extrato da mesma conta).
+- Upload por arrastar e soltar ou seleção, com vários arquivos. Arquivos da **mesma conta** são combinados (ex.: meses seguidos); contas diferentes ficam separadas.
+- **Vários extratos num só PDF** (ex.: o arquivo junta Inter + BB + Sicoob): cada conta é detectada e vira um rascunho próprio, com abas para revisar e um botão para gerar o OFX de todas.
 - PDFs **protegidos por senha**: a senha é pedida e usada só no navegador.
 - PDFs **escaneados** são detectados (pouco ou nenhum texto), e o OCR em português é oferecido.
 - Identificação automática de banco, agência, conta, tipo de conta e período. O que faltar é preenchido no formulário.
@@ -50,6 +51,23 @@ O build em `dist/` é estático (HTML/JS/CSS) e pode ser hospedado em qualquer s
 - **FITID determinístico**: `AAAAMMDD` + hash de banco|conta|data|valor|descrição|n, em que *n* é o índice de ocorrência entre lançamentos idênticos. Reimportar o mesmo extrato não duplica lançamentos, e editar ou excluir uma linha não altera o FITID das outras. FITIDs vindos de um OFX são preservados.
 - MEMO é sanitizado: sem quebras de linha, controles, `<` e `>`. Em SGML, `&` vira `E`; em XML, é escapado como `&amp;`. O limite é 255 caracteres. Há opção para remover acentos.
 
+## Bancos validados com extratos reais
+
+Os layouts abaixo foram testados com extratos reais, analisados localmente; nenhum dado real está no repositório. Em todos, a conferência de saldo fechou com diferença zero e sem lançamentos de sinal incerto.
+
+| Banco | Particularidades do layout tratadas |
+|---|---|
+| Banco do Brasil (app e internet banking empresarial) | Data, histórico e valor em linhas deslocadas; sinais `(+)`/`(-)`; banco reconhecido pelo layout (o PDF não traz o nome); código do histórico antes da descrição; "S A L D O" espaçado; aplicação automática (saldo sempre 0,00) |
+| Sicoob | Valor com sufixo `C`/`D`; valor e indicador quebrados acima e abaixo da linha da data; `DOC.:` em linha própria; quadro "RESUMO" no fim |
+| Mercado Pago | Descrição centralizada (linhas acima e abaixo da data); saldo por linha; resumo "Entradas/Saídas" no topo; datas `dd-mm-aaaa`; período "De … al …" |
+| Stone | Ordem do mais recente para o mais antigo; coluna TIPO (Entrada/Saída); agência e conta em linha de rótulos; hífen desenhado com glyph sem Unicode |
+| Banco Inter | "Saldo do dia" impresso antes dos lançamentos do dia; saldo por transação; datas "1 de Maio de 2026"; `-R$` nos débitos |
+| PagBank | `-R$` nos débitos e crédito sem sinal; descrição centralizada; sem saldo anterior (deduzido do primeiro "Saldo do dia") |
+| Santander (Aplicativo Empresas) | Colunas Data/Histórico/Documento/Valor/Saldo; saldo por linha; ordem decrescente |
+| Santander (Internet Banking Empresarial) | Cabeçalho de dia com dia da semana ("Quarta, 30 de setembro de 2026"); coluna DEBITO/CREDITO sem título; **sem saldos no documento** (informe-os na conferência) |
+| Itaú (extrato mensal PJ) | Legenda de siglas à esquerda da tabela; colunas entradas/saídas com `-` no fim; aplicação automática: "Saldo anterior/final" incluem a aplicação, e o OFX usa o saldo da conta corrente ("Saldo em C/C"); página de movimentação do CDB e totalizador ignorados |
+| Cora | Ordem decrescente com "Saldo do dia" no topo de cada dia; resumo com saldo inicial/final; sinais `+ R$` / `- R$` |
+
 ## Arquitetura
 
 ```
@@ -71,9 +89,11 @@ src/
   parsers/
     types.ts               Contrato BankParser (detect + parse)
     generic.ts             Parser genérico (colunas por cabeçalho, cadeia de saldos)
+    rows.ts                Reconstrução de linhas de tabela (células deslocadas/centralizadas)
+    split.ts               Separação de vários extratos (contas) num mesmo PDF
     metadata.ts            Banco, agência, conta e período
     registry.ts            Registro e escolha do parser
-    banks/                 Parsers específicos (nubank.ts, itau.ts)
+    banks/                 Parsers específicos (bb.ts, nubank.ts, itau.ts)
   components/              Interface React
 fixtures/                  Exemplos fictícios: OFX 1.x (1252), OFX 2.x (UTF-8) e PDFs gerados
 scripts/gerar-fixtures.ts  Gera os PDFs de exemplo
@@ -81,11 +101,13 @@ scripts/gerar-fixtures.ts  Gera os PDFs de exemplo
 
 ### Como o parser genérico funciona
 1. O pdf.js entrega trechos de texto com posição. Eles são agrupados em linhas pela coordenada vertical e quebrados em palavras com posição x.
+   - **Reconstrução de linhas da tabela** (`rows.ts`): pedaços de uma mesma linha da tabela que o PDF desenhou em alturas diferentes são reunidos. Linhas a menos de 0,75 altura de fonte são o mesmo desenho (BB, Sicoob). Fragmentos só de texto ou só de valor vão para a linha completa vizinha mais próxima (Mercado Pago, Stone, PagBank). As palavras são reordenadas por coluna, preservando a ordem vertical dentro de cada coluna.
+   - **Vários extratos** (`split.ts`): se o cabeçalho de uma página (o texto antes da tabela) mostra outra conta ou outro banco, começa um novo extrato.
 2. O parser procura a **linha de títulos** (Data / Histórico / Documento / Valor / Débito / Crédito / Saldo / D/C) e usa a posição x de cada título para classificar as palavras das linhas seguintes. Isso resolve extratos com débito e crédito em colunas separadas. Sem títulos, ele usa a posição relativa: o último valor é o saldo e o penúltimo é o lançamento.
 3. Uma linha que começa com data abre um lançamento. Uma linha sem data mas com valor também vira lançamento, no mesmo dia (bancos que imprimem a data uma vez por dia). Uma linha sem data e sem valor, logo abaixo e alinhada à descrição, é tratada como continuação da descrição.
 4. Linhas de saldo (SALDO ANTERIOR, SALDO DO DIA, SALDO FINAL…), totais e seções como "Lançamentos futuros" não viram lançamento. Os saldos são guardados para a conferência.
-5. Ordem de prioridade para o sinal: indicação explícita (`-`, `D`, `C`, parênteses) > coluna Débito/Crédito > coluna D/C > seção ("Total de saídas") > palavras-chave. Neste último caso, o lançamento é marcado como incerto.
-6. A **cadeia de saldos** (saldo anterior + lançamentos = saldo impresso) confirma ou corrige sinais incertos. Quando só uma combinação de sinais fecha o saldo, ela é aplicada.
+5. Ordem de prioridade para o sinal: indicação explícita (`-`, `D`, `C`, `(+)`/`(-)`, parênteses) > coluna Débito/Crédito > coluna D/C ou TIPO (Entrada/Saída) > seção ("Total de saídas") > palavras-chave. Se o documento marca débitos com "-" e não usa D/C, um valor sem sinal é crédito. Só no caso das palavras-chave o lançamento é marcado como incerto.
+6. A **cadeia de saldos** (saldo anterior + lançamentos = saldo impresso) confirma ou corrige sinais incertos. Quando só uma combinação de sinais fecha o saldo, ela é aplicada. Se cada lançamento traz o próprio saldo, ele é usado no lugar do "saldo do dia". Extratos em ordem decrescente são invertidos para a ordem cronológica.
 
 ## Como adicionar o parser de um novo banco
 
@@ -104,14 +126,17 @@ export const meuBancoParser = createGenericParser({
   closingBalance: [/^SALDO CONTABIL/],              // linhas extras de saldo final
   sections: [{ pattern: /^RETIRADAS$/, sign: -1 }], // seções que definem o sinal
   debitKeywords: /\bBX APLIC\b/,
+  cleanDescription: (d) => d.replace(/^\d{3}\s+/, ''), // ex.: remover código do histórico
 });
 ```
+
+   Um segundo argumento opcional define a detecção. O `bb.ts` é um exemplo real: ele reconhece o banco pelo **layout**, porque o PDF não traz o nome do banco.
 
    Para layouts muito diferentes, implemente diretamente a interface `BankParser` (`detect` + `parse`) de `src/parsers/types.ts`. O `parse` recebe as linhas com as palavras e suas posições.
 
 2. Registre o parser na lista de `src/parsers/registry.ts`, antes do `genericParser`.
 3. Se o banco não estiver em `src/utils/banks.ts`, adicione o código, o nome e os padrões de identificação.
-4. Adicione um teste em `src/parsers/` simulando o texto do extrato com `linesFromText` (veja `generic.test.ts`). Use dados fictícios.
+4. Adicione um teste em `src/parsers/` reproduzindo a **geometria** do extrato com dados fictícios. Use `linesFromText` (texto em largura fixa) ou `positioned` (posição vertical exata de cada linha, para células deslocadas). Veja `layouts.test.ts`. **Nunca** coloque extratos reais no repositório.
 
 Por padrão, o parser específico é escolhido quando o banco detectado tem o mesmo `bankCode`. Se ele não encontrar lançamentos, o registro tenta o genérico.
 
@@ -123,20 +148,23 @@ Por padrão, o parser específico é escolhido quando o banco detectado tem o me
 - geração de OFX 1.02 e 2.2, sanitização e FITIDs estáveis;
 - **ida e volta** OFX → objeto → OFX → objeto (os dois formatos, os dois fixtures);
 - parser genérico com textos de extrato simulados (cabeçalho, colunas C/D, data por dia, estilo Nubank, D/C sem cabeçalho, cadeia de saldos, lançamentos futuros);
+- **layouts de bancos reais com dados fictícios** (BB, Sicoob, Mercado Pago, Stone, Inter, PagBank, Santander, Itaú e Cora) e separação de vários extratos num mesmo PDF;
 - **ponta a ponta com PDF real**: OFX → PDF gerado pelo app → pdf.js → parser → mesmas transações → OFX.
 
 ## Limitações conhecidas
 
 - A extração automática de PDF não é 100% confiável. Por isso a revisão é obrigatória.
-- Os parsers do Nubank e do Itaú são ajustes baseados no layout público e **não foram validados com extratos reais**. Os demais bancos usam o genérico.
+- Os bancos validados com extratos reais estão na tabela acima. O parser do Nubank é um ajuste baseado no layout público e **não foi validado**. Outros bancos usam o genérico; confira com atenção as primeiras importações.
+- Extratos sem nenhum saldo impresso (ex.: Santander Internet Banking) não permitem a conferência automática: informe o saldo inicial e o final na tela de revisão.
 - O OCR depende da qualidade da digitalização e pode errar dígitos e sinais. Ele exige download do modelo na primeira vez e é lento em documentos longos.
 - Faturas de cartão de crédito e extratos de investimento não são o foco do parser de PDF.
 - Datas sem ano (`dd/mm`, `05 JAN`) dependem do período detectado ou do ano predominante no documento.
-- Vários PDFs no mesmo envio devem ser da mesma conta.
+- A separação de extratos num mesmo PDF depende de o número da conta (ou o banco) aparecer no topo da página em que cada extrato começa.
+- Uma linha da tabela cortada pela quebra de página pode perder um pedaço da descrição; o valor é preservado.
 
 ## Melhorias futuras
 
-- Parsers validados com extratos reais de cada banco (Bradesco, BB, Caixa, Santander, Inter, Sicoob, Sicredi…).
+- Validar com extratos reais de outros bancos (Bradesco, Caixa, Nubank, Sicredi, C6…).
 - Leitura de faturas de cartão (OFX `CREDITCARDMSGSRSV1`).
 - Detecção de lançamentos duplicados entre arquivos sobrepostos.
 - Visualização do PDF lado a lado com a tabela de revisão, destacando a linha de origem.

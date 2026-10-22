@@ -33,14 +33,14 @@ const MINUS_CHARS = /[−–—]/g; // − – —
 // Número BR: 1.234.567,89 ou 1234567,89 (exatamente 2 casas decimais).
 const BR_NUMBER = String.raw`(\d{1,3}(?:\.\d{3})+|\d+),(\d{2})`;
 const AMOUNT_RE = new RegExp(
-  String.raw`^([+-])?\s*(?:R\$\s*)?([+-])?\s*` + BR_NUMBER + String.raw`\s*([+-]|DB|CR|D|C)?$`,
+  String.raw`^([+-])?\s*(?:R\$\s*)?([+-])?\s*` + BR_NUMBER + String.raw`\s*(\([+-]\)|[+-]|DB|CR|D|C)?$`,
   'i',
 );
 
 /**
  * Interpreta um valor monetário no padrão brasileiro, preservando a indicação de sinal.
  * Aceita: "1.234,56", "-1.234,56", "1.234,56-", "1.234,56 D", "1.234,56 C",
- * "(1.234,56)", "R$ 1.234,56", "- R$ 1.234,56", "R$ -1.234,56", "+ 10,00".
+ * "(1.234,56)", "R$ 1.234,56", "- R$ 1.234,56", "R$ -1.234,56", "+ 10,00", "1.234,56 (-)".
  * Retorna null se o texto não for um valor válido.
  */
 export function parseBRAmountDetailed(input: string): ParsedAmount | null {
@@ -61,7 +61,7 @@ export function parseBRAmountDetailed(input: string): ParsedAmount | null {
   for (const t of [lead1, lead2]) if (t) signs.push(t === '-' ? -1 : 1);
   if (trail) {
     const t = trail.toUpperCase();
-    signs.push(t === '-' || t === 'D' || t === 'DB' ? -1 : 1);
+    signs.push(t.includes('-') || t === 'D' || t === 'DB' ? -1 : 1);
   }
   if (signs.length === 0) return { cents, sign: 0 };
   // Qualquer indicação de débito prevalece ("(-1,00)" continua débito).
@@ -235,8 +235,14 @@ function expandYear(y: string): number {
  * Formatos: dd/mm/aaaa, dd/mm/aa, dd-mm-aaaa, dd.mm.aaaa, dd/mm, "05 JAN", "05/JAN/2024",
  * "05 JAN 2024", "05 de janeiro de 2024", e ISO aaaa-mm-dd.
  */
+/** Nome de dia da semana ("Quarta,", "segunda-feira", "Sáb."). */
+export const WEEKDAY_RE = /^(SEGUNDA|TERCA|QUARTA|QUINTA|SEXTA)(-FEIRA)?,?$|^(SABADO|DOMINGO|SEG|TER|QUA|QUI|SEX|SAB|DOM)\.?,?$/;
+
 export function parseBRDate(input: string, ctx: DateContext = {}): string | null {
-  const s = stripAccents(input.trim()).toUpperCase().replace(/\s+/g, ' ');
+  let s = stripAccents(input.trim()).toUpperCase().replace(/\s+/g, ' ');
+  // "Quarta, 30 de setembro de 2026" → ignora o dia da semana
+  const first = s.split(' ')[0];
+  if (first && s.includes(' ') && WEEKDAY_RE.test(first)) s = s.slice(first.length + 1);
   if (!s) return null;
   let m: RegExpExecArray | null;
   let y: number, mo: number, d: number;

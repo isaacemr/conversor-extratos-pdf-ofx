@@ -57,12 +57,16 @@ export function detectMetadata(lines: string[]): DetectedMetadata {
     account.accountId = combined[2].replace(/\./g, '');
   }
   if (!account.branchId) {
-    const ag = /\bAG(?:ENCIA|\.)?\s*(?:N[O°º]\.?\s*)?:?\s*(\d{3,5}(?:-[\dX])?)\b/.exec(text);
-    if (ag) account.branchId = ag[1];
+    // "Agência: 1" (com dois-pontos aceita 1 a 5 dígitos); cooperativas (Sicoob/Sicredi) usam "COOP."
+    const ag =
+      /\bAG(?:ENCIA|\.)?\s*(?:N[O°º]\.?\s*)?(?::\s*(\d{1,5}(?:-[\dX])?)|\s+(\d{3,5}(?:-[\dX])?))(?!\d)/.exec(text) ??
+      /\bCOOP(?:ERATIVA)?\.?\s*:?\s*(\d{3,5}(?:-[\dX])?)(?!\d)/.exec(text);
+    const branch = ag?.[1] ?? ag?.[2];
+    if (branch) account.branchId = branch.length < 4 && !branch.includes('-') ? branch.padStart(4, '0') : branch;
   }
   if (!account.accountId) {
     const cc =
-      /\b(?:CONTA(?:\s+CORRENTE|\s+POUPANCA|\s+PAGAMENTO)?|C\/C|CC)\s*(?:N[O°º]\.?\s*)?:?\s*(\d[\d.]{1,14}-[\dX]|\d{4,15})\b/.exec(text);
+      /\b(?:CONTA(?:\s+CORRENTE|\s+POUPANCA|\s+PAGAMENTO)?|C\/C|CC)\s*(?:N[O°º]\.?\s*)?:?\s*(\d[\d.]{1,14}-[\dX](?![\dX])|\d{4,15}(?![\d-]))/.exec(text);
     if (cc) account.accountId = cc[1].replace(/\./g, '');
   }
   if (/\bPOUPANCA\b/.test(text.slice(0, 1500)) && !/CONTA CORRENTE/.test(text.slice(0, 1500))) {
@@ -73,7 +77,7 @@ export function detectMetadata(lines: string[]): DetectedMetadata {
   let startDate: string | undefined;
   let endDate: string | undefined;
   const periodRes = [
-    new RegExp(String.raw`PERIODO(?:\s+DE)?\s*:?\s*(?:DE\s+)?${DATE_PAT}\s*(?:A|ATE|-|E)\s*${DATE_PAT}`),
+    new RegExp(String.raw`PERIODO(?:\s+DE)?\s*:?\s*(?:DE\s+)?${DATE_PAT}\s*(?:AL|A|ATE|-|E)\s*${DATE_PAT}`),
     new RegExp(String.raw`(?:MOVIMENTACAO|EXTRATO|LANCAMENTOS)\s+(?:DE|DO DIA)\s+${DATE_PAT}\s*(?:A|ATE)\s*${DATE_PAT}`),
     new RegExp(String.raw`\b${DATE_PAT}\s+(?:A|ATE)\s+${DATE_PAT}`),
   ];

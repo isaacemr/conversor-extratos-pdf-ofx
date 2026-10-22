@@ -13,7 +13,7 @@ import { AccountForm } from './AccountForm';
 import { BalanceCheck, balanceStatus } from './BalanceCheck';
 import { Dropzone } from './Dropzone';
 import { ReviewTable } from './ReviewTable';
-import { Alert, Badge, Button, Card, CardHeader, Icon, ProgressBar, Spinner } from './ui';
+import { Alert, Badge, Button, Card, CardHeader, Icon, ProgressBar, Spinner, cx } from './ui';
 
 type JobStatus = 'reading' | 'password' | 'scanned' | 'ocr' | 'done' | 'error';
 
@@ -24,9 +24,27 @@ interface Job {
   progress?: { msg: string; ratio: number };
   error?: string;
   passwordIncorrect?: boolean;
-  result?: ParseResult;
+  /** Um resultado por extrato encontrado no PDF. */
+  results?: ParseResult[];
   pageCount?: number;
   ocr?: boolean;
+}
+
+/** Rascunho em revisão: um por conta. */
+interface Draft {
+  key: string;
+  statement: Statement;
+}
+
+/** Chave da conta (banco + número), para juntar meses da mesma conta e separar contas diferentes. */
+function accountKey(st: Statement): string {
+  const acct = (st.account.accountId ?? '').replace(/\D/g, '');
+  return acct ? `${st.account.bankId ?? ''}|${acct}` : '';
+}
+
+function draftLabel(st: Statement): string {
+  const bank = st.account.bankName?.replace(/\s*\(.*\)$/, '') ?? (st.account.bankId ? `Banco ${st.account.bankId}` : 'Banco ?');
+  return `${bank} · ${st.account.accountId ?? 'conta não identificada'}`;
 }
 
 function emptyStatement(): Statement {
@@ -56,7 +74,30 @@ function mergeStatement(prev: Statement | null, st: Statement, jobId: string): S
 
 export function PdfToOfx() {
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [draft, setDraft] = useState<Statement | null>(null);
+  const [drafts, setDrafts] = useState<Draft[]>([]);
+  const [activeKey, setActiveKey] = useState<string | null>(null);
+  const activeDraft = drafts.find((d) => d.key === activeKey) ?? drafts[0];
+  const draft = activeDraft?.statement ?? null;
+  const updateDraft = (fn: (s: Statement) => Statement) =>
+    setDrafts((ds) => ds.map((d) => (d.key === activeDraft?.key ? { ...d, statement: fn(d.statement) } : d)));
+
+  /** Distribui os extratos de um PDF entre os rascunhos (mesma conta = mesmo rascunho). */
+  function mergeResults(jobId: string, results: ParseResult[]) {
+    const withTx = results.filter((r) => r.statement.transactions.length > 0);
+    if (!withTx.length) return;
+    const keys = withTx.map((r, i) => accountKey(r.statement) || `${jobId}#${i}`);
+    setDrafts((ds) => {
+      const next = [...ds];
+      withTx.forEach((r, i) => {
+        const key = keys[i];
+        const at = next.findIndex((d) => d.key === key);
+        if (at >= 0) next[at] = { key, statement: mergeStatement(next[at].statement, r.statement, jobId) };
+        else next.push({ key, statement: mergeStatement(null, r.statement, jobId) });
+      });
+      return next;
+    });
+    setActiveKey((k) => k ?? keys[0]);
+  }
   const [notice, setNotice] = useState<{ tone: 'error' | 'success' | 'warn'; text: string } | null>(null);
   const [version, setVersion] = useState<OfxVersion>('102');
   const [noAccents, setNoAccents] = useState(false);
@@ -83,10 +124,8 @@ export function PdfToOfx() {
         updateJob(job.id, { status: 'scanned', pageCount: out.pageCount, progress: undefined });
         return;
       }
-      updateJob(job.id, { status: 'done', result: out.result, pageCount: out.pageCount, ocr: out.ocr, progress: undefined });
-      if (out.result.statement.transactions.length > 0) {
-        setDraft((prev) => mergeStatement(prev, out.result.statement, job.id));
-      }
+      updateJob(job.id, { status: 'done', results: out.results, pageCount: out.pageCount, ocr: out.ocr, progress: undefined });
+      mergeResults(job.id, out.results);
     } catch (e) {
       if (e instanceof PdfPasswordError) {
         updateJob(job.id, { status: 'password', passwordIncorrect: e.incorrect, progress: undefined });
@@ -113,29 +152,39 @@ export function PdfToOfx() {
 
   function removeJob(id: string) {
     setJobs((js) => js.filter((j) => j.id !== id));
-    setDraft((d) => {
-      if (!d) return d;
-      const txs = d.transactions.filter((t) => t.source !== id);
-      return jobs.filter((j) => j.id !== id && j.status === 'done').length === 0 && txs.length === 0 ? null : { ...d, transactions: txs };
-    });
+    setDrafts((ds) =>
+      ds
+        .map((d) => ({ ...d, statement: { ...d.statement, transactions: d.statement.transactions.filter((t) => t.source !== id) } }))
+        .filter((d) => d.statement.transactions.length > 0 || d.key.startsWith('manual')),
+    );
   }
 
   function reset() {
     setJobs([]);
-    setDraft(null);
+    setDrafts([]);
+    setActiveKey(null);
     setNotice(null);
     setShowErrors(false);
   }
 
   const sources = useMemo(() => Object.fromEntries(jobs.map((j) => [j.id, j.file.name])), [jobs]);
-  const warnings = jobs.flatMap((j) => (j.result ? j.result.warnings.map((w) => (jobs.length > 1 ? `${j.file.name}: ${w}` : w)) : []));
+  const warnings = jobs.flatMap((j) =>
+    (j.results ?? []).flatMap((r) =>
+      r.warnings.map((w) => {
+        const where = [jobs.length > 1 ? j.file.name : '', (j.results?.length ?? 0) > 1 ? draftLabel(r.statement) : '']
+          .filter(Boolean)
+          .join(' — ');
+        return where ? `${where}: ${w}` : w;
+      }),
+    ),
+  );
   const busy = jobs.some((j) => j.status === 'reading' || j.status === 'ocr');
-  const doneEmpty = jobs.filter((j) => j.status === 'done' && j.result && j.result.statement.transactions.length === 0);
+  const doneEmpty = jobs.filter((j) => j.status === 'done' && (j.results ?? []).every((r) => r.statement.transactions.length === 0));
 
   // ----- Exportação -----
-  const exportErrors: string[] = [];
-  const exportWarnings: string[] = [];
-  if (draft) {
+  function exportChecks(draft: Statement) {
+    const exportErrors: string[] = [];
+    const exportWarnings: string[] = [];
     if (!/^\d{3}$/.test(draft.account.bankId ?? '')) exportErrors.push('Informe o código do banco (3 dígitos).');
     if (!draft.account.accountId) exportErrors.push('Informe o número da conta.');
     if (draft.transactions.length === 0) exportErrors.push('Não há lançamentos para exportar.');
@@ -146,7 +195,9 @@ export function PdfToOfx() {
     const bs = balanceStatus(draft);
     if (bs.difference) exportWarnings.push(`A conferência de saldo tem diferença de R$ ${formatBRL(bs.difference)}.`);
     if (draft.closingBalance === undefined) exportWarnings.push('Saldo final não informado: o LEDGERBAL será o saldo inicial + movimentações.');
+    return { exportErrors, exportWarnings };
   }
+  const { exportErrors, exportWarnings } = draft ? exportChecks(draft) : { exportErrors: [] as string[], exportWarnings: [] as string[] };
 
   function baseName(st: Statement) {
     return safeFilename(
@@ -154,13 +205,10 @@ export function PdfToOfx() {
     );
   }
 
-  function exportOfx() {
-    if (!draft) return;
-    setShowErrors(true);
-    if (exportErrors.length) {
-      setNotice({ tone: 'error', text: exportErrors.join(' ') });
-      return;
-    }
+  /** Gera, valida e baixa o OFX de um extrato. */
+  function buildAndDownload(draft: Statement): { ok: boolean; text: string } {
+    const { exportErrors } = exportChecks(draft);
+    if (exportErrors.length) return { ok: false, text: `${draftLabel(draft)}: ${exportErrors.join(' ')}` };
     try {
       const st: Statement = {
         ...draft,
@@ -177,13 +225,30 @@ export function PdfToOfx() {
         throw new Error('A validação do arquivo gerado falhou (contagem ou soma diferente).');
       }
       downloadBlob(bytes, `${baseName(st)}.ofx`, 'application/x-ofx');
-      setNotice({
-        tone: 'success',
-        text: `OFX ${version === '102' ? '1.02 (SGML)' : '2.2 (XML)'} gerado e validado: ${check.transactions.length} lançamento(s), saldo final R$ ${formatBRL(check.closingBalance ?? 0)}.`,
-      });
+      return {
+        ok: true,
+        text: `${draftLabel(draft)}: OFX ${version === '102' ? '1.02 (SGML)' : '2.2 (XML)'} gerado e validado, ${check.transactions.length} lançamento(s), saldo final R$ ${formatBRL(check.closingBalance ?? 0)}.`,
+      };
     } catch (e) {
-      setNotice({ tone: 'error', text: e instanceof Error ? e.message : 'Falha ao gerar o OFX.' });
+      return { ok: false, text: `${draftLabel(draft)}: ${e instanceof Error ? e.message : 'falha ao gerar o OFX.'}` };
     }
+  }
+
+  function exportOfx() {
+    if (!draft) return;
+    setShowErrors(true);
+    const r = buildAndDownload(draft);
+    setNotice({ tone: r.ok ? 'success' : 'error', text: r.text });
+  }
+
+  function exportAllOfx() {
+    setShowErrors(true);
+    const rs = drafts.map((d) => buildAndDownload(d.statement));
+    const failed = rs.filter((r) => !r.ok).length;
+    setNotice({
+      tone: failed ? (failed === rs.length ? 'error' : 'warn') : 'success',
+      text: rs.map((r) => (r.ok ? '✓ ' : '✗ ') + r.text).join('\n'),
+    });
   }
 
   async function exportPdf() {
@@ -223,7 +288,7 @@ export function PdfToOfx() {
       <Card>
         <CardHeader
           title="Arquivos"
-          subtitle={jobs.length > 1 ? 'Os lançamentos de todos os arquivos são combinados em um único extrato.' : undefined}
+          subtitle={jobs.length > 1 ? 'Arquivos da mesma conta são combinados; contas diferentes ficam separadas.' : undefined}
           actions={
             <Button size="sm" variant="ghost" onClick={reset}>
               Recomeçar
@@ -274,7 +339,7 @@ export function PdfToOfx() {
                   </span>
                 </form>
               )}
-              {(j.status === 'scanned' || (j.status === 'done' && j.result?.statement.transactions.length === 0)) && (
+              {(j.status === 'scanned' || (j.status === 'done' && (j.results ?? []).every((r) => r.statement.transactions.length === 0))) && (
                 <div className="mt-2 pl-7">
                   <Alert tone="warn" title="Não encontramos transações neste PDF.">
                     <p>
@@ -305,7 +370,11 @@ export function PdfToOfx() {
         </div>
       </Card>
 
-      {notice && <Alert tone={notice.tone} onClose={() => setNotice(null)}>{notice.text}</Alert>}
+      {notice && (
+        <Alert tone={notice.tone} onClose={() => setNotice(null)}>
+          <span className="whitespace-pre-line">{notice.text}</span>
+        </Alert>
+      )}
 
       {warnings.length > 0 && (
         <Alert tone="warn" title="Pontos de atenção">
@@ -327,7 +396,9 @@ export function PdfToOfx() {
         <div className="text-center">
           <Button
             onClick={() => {
-              setDraft(emptyStatement());
+              const key = `manual-${newId()}`;
+              setDrafts((ds) => [...ds, { key, statement: emptyStatement() }]);
+              setActiveKey(key);
             }}
           >
             <Icon.Plus size={16} /> Digitar lançamentos manualmente
@@ -337,17 +408,50 @@ export function PdfToOfx() {
 
       {draft && (
         <>
+          {drafts.length > 1 && (
+            <div className="space-y-2">
+              <p className="text-sm text-slate-600">
+                Encontramos <strong>{drafts.length} contas</strong>. Cada uma gera um OFX separado; revise uma de cada vez.
+              </p>
+              <div role="tablist" aria-label="Contas encontradas" className="flex flex-wrap gap-2">
+                {drafts.map((d) => {
+                  const on = d.key === activeDraft?.key;
+                  const diff = balanceStatus(d.statement).difference;
+                  return (
+                    <button
+                      key={d.key}
+                      role="tab"
+                      aria-selected={on}
+                      onClick={() => setActiveKey(d.key)}
+                      className={cx(
+                        'flex items-center gap-2 rounded-lg border px-3 py-2 text-left text-sm transition-colors',
+                        on ? 'border-brand-600 bg-brand-50 text-brand-900 ring-1 ring-brand-600' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50',
+                      )}
+                    >
+                      <span className="font-medium">{draftLabel(d.statement)}</span>
+                      <Badge tone="slate">{d.statement.transactions.length}</Badge>
+                      {diff === 0 ? (
+                        <Icon.Check size={14} className="text-emerald-600" aria-label="saldo confere" />
+                      ) : diff !== undefined ? (
+                        <Icon.Alert size={14} className="text-red-600" aria-label="saldo com diferença" />
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           <div className="grid gap-5 lg:grid-cols-5">
             <Card className="lg:col-span-3">
               <CardHeader title="Dados da conta" subtitle="Preenchidos automaticamente quando possível. Confira." />
               <div className="p-4 sm:p-5">
-                <AccountForm statement={draft} showErrors={showErrors} onChange={(p) => setDraft((d) => (d ? { ...d, ...p } : d))} />
+                <AccountForm statement={draft} showErrors={showErrors} onChange={(p) => updateDraft((d) => ({ ...d, ...p }))} />
               </div>
             </Card>
             <Card className="lg:col-span-2">
               <CardHeader title="Conferência de saldo" />
               <div className="p-4 sm:p-5">
-                <BalanceCheck statement={draft} onChange={(p) => setDraft((d) => (d ? { ...d, ...p } : d))} />
+                <BalanceCheck statement={draft} onChange={(p) => updateDraft((d) => ({ ...d, ...p }))} />
               </div>
             </Card>
           </div>
@@ -357,7 +461,7 @@ export function PdfToOfx() {
               title="Revisão dos lançamentos"
               subtitle="Edite qualquer campo. Linhas em amarelo tiveram o tipo deduzido pela descrição."
             />
-            <ReviewTable statement={draft} sources={sources} onTransactions={(txs) => setDraft((d) => (d ? { ...d, transactions: txs } : d))} />
+            <ReviewTable statement={draft} sources={sources} onTransactions={(txs) => updateDraft((d) => ({ ...d, transactions: txs }))} />
           </Card>
 
           <Card className="lg:sticky lg:bottom-4 lg:z-20 lg:shadow-lg">
@@ -392,8 +496,13 @@ export function PdfToOfx() {
                 <Button size="sm" onClick={() => void exportPdf()} disabled={!draft.transactions.length}>
                   PDF
                 </Button>
+                {drafts.length > 1 && (
+                  <Button onClick={exportAllOfx} disabled={busy} title="Gera um arquivo OFX por conta">
+                    <Icon.Download size={16} /> OFX de todas ({drafts.length})
+                  </Button>
+                )}
                 <Button variant="primary" onClick={exportOfx} disabled={busy}>
-                  <Icon.Download size={16} /> Gerar OFX
+                  <Icon.Download size={16} /> Gerar OFX{drafts.length > 1 ? ' desta conta' : ''}
                 </Button>
               </div>
             </div>
@@ -424,11 +533,14 @@ function JobBadge({ job }: { job: Job }) {
     case 'error':
       return <Badge tone="red">Erro</Badge>;
     case 'done': {
-      const n = job.result?.statement.transactions.length ?? 0;
+      const results = job.results ?? [];
+      const n = results.reduce((a, r) => a + r.statement.transactions.length, 0);
+      const parsers = [...new Set(results.map((r) => r.parserName))].join(', ');
       return (
         <span className="flex flex-wrap items-center gap-1.5">
           {job.ocr && <Badge tone="amber">OCR</Badge>}
-          <Badge tone="slate">{job.result?.parserName}</Badge>
+          <Badge tone="slate">{parsers}</Badge>
+          {results.length > 1 && <Badge tone="brand">{results.length} extratos</Badge>}
           <Badge tone={n ? 'green' : 'amber'}>
             {n} lançamento{n === 1 ? '' : 's'}
           </Badge>

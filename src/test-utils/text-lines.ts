@@ -22,6 +22,25 @@ export function linesFromText(text: string): TextLine[] {
   return out;
 }
 
+/**
+ * Como linesFromText, mas com a posição vertical de cada linha explícita — para simular
+ * células deslocadas/centralizadas. Cada página é uma lista de [y, texto].
+ */
+export function positioned(pages: Array<Array<[number, string]>>, h = 9): TextLine[] {
+  return pages.flatMap((rows, p) =>
+    rows
+      .map(([y, raw]) => {
+        const words = [...raw.matchAll(/\S+/g)].map((m) => ({
+          text: m[0],
+          x0: m.index! * CHAR_W,
+          x1: (m.index! + m[0].length) * CHAR_W,
+        }));
+        return { page: p + 1, y, h, words, text: words.map((w) => w.text).join(' ') };
+      })
+      .filter((l) => l.words.length > 0),
+  );
+}
+
 /** Monta uma linha de tabela com colunas de largura fixa (valores alinhados à direita). */
 export function row(cells: string[], widths: number[], align: Array<'l' | 'r'>): string {
   return cells.map((s, i) => (align[i] === 'r' ? s.padStart(widths[i]) : s.padEnd(widths[i]))).join('');

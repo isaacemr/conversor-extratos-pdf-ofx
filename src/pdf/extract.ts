@@ -55,10 +55,11 @@ export async function extractPdfPages(
     const items: PdfTextItem[] = [];
     for (const it of content.items) {
       if (!('str' in it) || !it.str || !it.str.trim()) continue;
+      const str = it.str;
       const [a, b, c, d, e, f] = it.transform as number[];
       const [vx, vy] = viewport.convertToViewportPoint(e, f);
       const h = Math.hypot(c, d) || Math.hypot(a, b) || it.height || 10;
-      items.push({ str: it.str, x: vx, y: vy, w: it.width, h });
+      items.push({ str, x: vx, y: vy, w: it.width, h });
     }
     pages.push({ page: p, width: viewport.width, height: viewport.height, items });
     page.cleanup();
@@ -135,7 +136,15 @@ export function pageToLines(page: PdfPageText): TextLine[] {
         words.push({ text: w.text, x0: w.x0, x1: w.x1 });
       }
     }
-    return { page: page.page, y: g.y, h, words, text: words.map((w) => w.text).join(' ') };
+    // Caracteres da "área de uso privado" vêm de fontes sem mapeamento Unicode. Entre letras ou
+    // dígitos costumam ser hífens/dois-pontos ("1234" + U+E088 + "5" = "1234-5"); soltos, são ícones.
+    const clean = words
+      .map((w) => ({
+        ...w,
+        text: w.text.replace(/(?<=[0-9A-Za-z])[\uE000-\uF8FF]+(?=[0-9A-Za-z])/g, '-').replace(/[\uE000-\uF8FF]/g, ''),
+      }))
+      .filter((w) => w.text);
+    return { page: page.page, y: g.y, h, words: clean, text: clean.map((w) => w.text).join(' ') };
   });
 }
 

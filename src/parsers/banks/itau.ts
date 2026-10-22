@@ -1,11 +1,16 @@
 /**
- * Itaú — exemplo de parser específico baseado no genérico.
+ * Itaú — ajustes sobre o parser genérico, validados com um extrato mensal PJ real
+ * ("extrato mensal ag ... cc ...", colunas "data | descrição | entradas | saídas | saldo").
  *
- * O extrato de conta corrente traz linhas "SALDO DO DIA" e "SDO CTA/APL AUTOMATICAS"
- * (saldo incluindo aplicações automáticas), que não são o saldo contábil. O genérico já
- * trata a maioria; aqui marcamos o saldo com aplicações como linha a ignorar.
- *
- * Observação: ajustes feitos a partir do layout público; valide com seus extratos.
+ * Contas com aplicação automática (Aplic Aut Mais) mantêm um saldo fixo na conta corrente
+ * (ex.: R$ 1,00) e mostram dois saldos diferentes:
+ * - "Saldo anterior" e "Saldo final" = conta corrente + aplicações → não são o saldo da conta;
+ * - "SALDO APLIC AUT MAIS" = saldo da aplicação → informativo;
+ * - coluna saldo e "Saldo em C/C" = saldo da conta corrente → é este que vai para o OFX.
+ * Os resgates/aplicações automáticos ("Res Aplic Aut Mais", "Apl Aplic Aut Mais") são
+ * movimentos reais da conta corrente e entram como lançamentos.
+ * A página "Conta Corrente | Aplicações Automáticas" (movimentação do CDB) e as notas
+ * explicativas não são importadas.
  */
 import { createGenericParser } from '../generic';
 
@@ -13,5 +18,7 @@ export const itauParser = createGenericParser({
   id: 'itau',
   name: 'Itaú',
   bankCode: '341',
-  ignore: [/^SDO CTA\/APL/, /^SALDO APLIC/, /^SALDO TOTAL DISPONIVEL/],
+  ignore: [/^SDO CTA\/APL/, /^SALDO APLIC/, /^SALDO TOTAL DISPONIVEL/, /^SALDO ANTERIOR\b/, /^SALDO FINAL\b/],
+  closingBalance: [/^SALDO EM C\/C\b/],
+  stop: [/^CONTA CORRENTE \| APLICACOES AUTOMATICAS/, /^APLIC AUT MAIS\b/, /^TOTALIZADOR DE APLICACOES/],
 });

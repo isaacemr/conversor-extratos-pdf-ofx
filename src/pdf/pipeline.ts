@@ -2,14 +2,15 @@
  * Pipeline PDF → transações no navegador: abre o PDF, extrai o texto (ou faz OCR) e
  * executa o parser adequado.
  */
-import { parseStatement } from '../parsers/registry';
+import { parseDocument } from '../parsers/registry';
 import type { ParseResult } from '../parsers/types';
 import { extractPdfPages, looksScanned, pagesToLines } from './extract';
 import { ocrPdf, type OcrProgress } from './ocr';
 import { openPdf } from './pdfjs';
 
 export type PdfProcessResult =
-  | { kind: 'parsed'; result: ParseResult; pageCount: number; ocr: boolean }
+  /** Um resultado por extrato encontrado (um PDF pode conter contas diferentes). */
+  | { kind: 'parsed'; results: ParseResult[]; pageCount: number; ocr: boolean }
   | { kind: 'scanned'; pageCount: number };
 
 export async function processPdf(
@@ -26,8 +27,8 @@ export async function processPdf(
       pages = await extractPdfPages(doc, (p, t) => opts.onProgress?.(`Lendo página ${p} de ${t}`, p / t));
       if (looksScanned(pages)) return { kind: 'scanned', pageCount };
     }
-    const result = parseStatement({ lines: pagesToLines(pages), fileName: opts.fileName, ocr: opts.ocr });
-    return { kind: 'parsed', result, pageCount, ocr: !!opts.ocr };
+    const results = parseDocument({ lines: pagesToLines(pages), fileName: opts.fileName, ocr: opts.ocr });
+    return { kind: 'parsed', results, pageCount, ocr: !!opts.ocr };
   } finally {
     await close();
   }
