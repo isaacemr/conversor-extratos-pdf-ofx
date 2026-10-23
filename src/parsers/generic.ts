@@ -21,6 +21,7 @@ import type { TextLine, Word } from '../pdf/extract';
 import type { Statement, Transaction } from '../types';
 import { newId } from '../types';
 import { WEEKDAY_RE, normalizeForMatch, parseBRAmountDetailed, parseBRDate, stripAccents, type DateContext } from '../utils/br-format';
+import { bankByCode } from '../utils/banks';
 import { detectMetadata } from './metadata';
 import { groupRows } from './rows';
 import type { BankParser, ParseInput, ParseResult, ParseStats } from './types';
@@ -494,6 +495,10 @@ export function parseGeneric(input: ParseInput, cfg: GenericConfig): ParseResult
     }
     if (skipping) return;
 
+    // Linha de período ("01 DE JANEIRO DE 2026 a 31 DE JANEIRO DE 2026", repetida no topo
+    // das páginas): não é lançamento nem muda a data corrente.
+    if (date && !valueTok && /^(A|ATE|AO)\s+\d/.test(norm)) return;
+
     // 4. Marcadores de seção (Nubank: "Total de entradas"/"Total de saídas"). Quadros de
     //    resumo acima da tabela ("Saídas: R$ ...") não definem seção.
     for (const s of aboveHeader ? [] : sections) {
@@ -689,7 +694,12 @@ export function parseGeneric(input: ParseInput, cfg: GenericConfig): ParseResult
     openingBalance: opening ?? derivedOpening,
     closingBalance: closing,
   };
-  if (cfg.bankCode && !statement.account.bankId) statement.account.bankId = cfg.bankCode;
+  // Parser específico de banco: o banco é o dele (o texto pode citar outros bancos nas
+  // contrapartes, o que engana a detecção por palavras).
+  if (cfg.bankCode) {
+    statement.account.bankId = cfg.bankCode;
+    statement.account.bankName = bankByCode(cfg.bankCode)?.name ?? statement.account.bankName;
+  }
 
   const unc = transactions.filter((t) => t.uncertain).length;
   if (unc > 0) {

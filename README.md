@@ -67,6 +67,7 @@ Os layouts abaixo foram testados com extratos reais, analisados localmente; nenh
 | Santander (Internet Banking Empresarial) | Cabeçalho de dia com dia da semana ("Quarta, 30 de setembro de 2026"); coluna DEBITO/CREDITO sem título; **sem saldos no documento** (informe-os na conferência) |
 | Itaú (extrato mensal PJ) | Legenda de siglas à esquerda da tabela; colunas entradas/saídas com `-` no fim; aplicação automática: "Saldo anterior/final" incluem a aplicação, e o OFX usa o saldo da conta corrente ("Saldo em C/C"); página de movimentação do CDB e totalizador ignorados |
 | Cora | Ordem decrescente com "Saldo do dia" no topo de cada dia; resumo com saldo inicial/final; sinais `+ R$` / `- R$` |
+| Nubank (conta PJ) | Banco reconhecido pelo layout (o texto quase não cita o Nubank e as contrapartes citam outros bancos); "Total de entradas/saídas" por dia define o sinal; quadro de resumo no topo; linha de período repetida em cada página; dados da contraparte nas linhas de baixo |
 
 ## Arquitetura
 
@@ -148,13 +149,13 @@ Por padrão, o parser específico é escolhido quando o banco detectado tem o me
 - geração de OFX 1.02 e 2.2, sanitização e FITIDs estáveis;
 - **ida e volta** OFX → objeto → OFX → objeto (os dois formatos, os dois fixtures);
 - parser genérico com textos de extrato simulados (cabeçalho, colunas C/D, data por dia, estilo Nubank, D/C sem cabeçalho, cadeia de saldos, lançamentos futuros);
-- **layouts de bancos reais com dados fictícios** (BB, Sicoob, Mercado Pago, Stone, Inter, PagBank, Santander, Itaú e Cora) e separação de vários extratos num mesmo PDF;
+- **layouts de bancos reais com dados fictícios** (BB, Sicoob, Mercado Pago, Stone, Inter, PagBank, Santander, Itaú, Cora e Nubank) e separação de vários extratos num mesmo PDF;
 - **ponta a ponta com PDF real**: OFX → PDF gerado pelo app → pdf.js → parser → mesmas transações → OFX.
 
 ## Limitações conhecidas
 
 - A extração automática de PDF não é 100% confiável. Por isso a revisão é obrigatória.
-- Os bancos validados com extratos reais estão na tabela acima. O parser do Nubank é um ajuste baseado no layout público e **não foi validado**. Outros bancos usam o genérico; confira com atenção as primeiras importações.
+- Os bancos validados com extratos reais estão na tabela acima. Outros bancos usam o genérico; confira com atenção as primeiras importações.
 - Extratos sem nenhum saldo impresso (ex.: Santander Internet Banking) não permitem a conferência automática: informe o saldo inicial e o final na tela de revisão.
 - O OCR depende da qualidade da digitalização e pode errar dígitos e sinais. Ele exige download do modelo na primeira vez e é lento em documentos longos.
 - Faturas de cartão de crédito e extratos de investimento não são o foco do parser de PDF.
@@ -164,7 +165,7 @@ Por padrão, o parser específico é escolhido quando o banco detectado tem o me
 
 ## Melhorias futuras
 
-- Validar com extratos reais de outros bancos (Bradesco, Caixa, Nubank, Sicredi, C6…).
+- Validar com extratos reais de outros bancos (Bradesco, Caixa, Sicredi, C6…).
 - Leitura de faturas de cartão (OFX `CREDITCARDMSGSRSV1`).
 - Detecção de lançamentos duplicados entre arquivos sobrepostos.
 - Visualização do PDF lado a lado com a tabela de revisão, destacando a linha de origem.

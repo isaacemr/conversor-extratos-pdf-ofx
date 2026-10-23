@@ -354,6 +354,54 @@ describe('Cora: ordem decrescente com saldo do dia no topo e resumo no início',
   });
 });
 
+describe('Nubank (conta PJ): resumo no topo, totais por dia, contraparte de outro banco', () => {
+  const r = (...c: string[]) => row(c, [12, 76, 14], ['l', 'l', 'r']);
+  const top = (y: number): Array<[number, string]> => [
+    [y, '                                                                  EMPRESA FICTICIA LTDA'],
+    [y + 13, '                                                            CNPJ 00.000.000/0001-00     Agência 0001 Conta'],
+    [y + 25, '                                                                                                1234567-8'],
+    [y + 76, '           01 DE JANEIRO DE 2026 a 31 DE JANEIRO DE 2026                                VALORES EM R$'],
+  ];
+  const lines = positioned([
+    [
+      ...top(67),
+      [172, '                                                                Saldo inicial                   100,00'],
+      [187, '           Saldo final do período'],
+      [192, '                                                                Total de entradas             +500,00'],
+      [210, '           R$ 400,00                                            Total de saídas               -200,00'],
+      [232, '                                                                Saldo final do período          400,00'],
+      [261, '           Movimentações'],
+      [283, r('05 JAN 2026', 'Total de saídas', '- 200,00')],
+      [304, r('', 'Transferência enviada pelo Pix FORNECEDOR FICTICIO LTDA -', '200,00')],
+      [324, r('', '00.000.000/0001-00 - BCO SANTANDER (BRASIL) S.', '')],
+      [344, r('', 'A. (0033) Agência: 1111 Conta: 2222-3', '')],
+      [378, r('', 'Saldo do dia', '-100,00')],
+      [410, r('06 JAN 2026', 'Total de entradas', '+ 500,00')],
+      [788, '                    Extrato gerado dia 05 de fevereiro de 2026 às 12:54                 1 de 2'],
+    ],
+    [
+      ...top(61),
+      [168, r('', 'Depósito recebido CLIENTE FICTICIO -', '500,00')],
+      [202, r('', 'Saldo do dia', '400,00')],
+      [722, '           Tem alguma dúvida? Mande uma mensagem pelo chat do app. nubank.com.br/contatos'],
+    ],
+  ]);
+  const res = parseStatement({ lines });
+
+  it('reconhece o Nubank pelo layout e fecha o saldo', () => {
+    expect(res.parserId).toBe('nubank');
+    expect(key(res.statement)).toEqual([
+      ['2026-01-05', 'Transferência enviada pelo Pix FORNECEDOR FICTICIO LTDA 00.000.000/0001-00 - BCO SANTANDER (BRASIL) S. A. (0033) Agência: 1111 Conta: 2222-3', -20000, ''],
+      ['2026-01-06', 'Depósito recebido CLIENTE FICTICIO', 50000, ''],
+    ]);
+    expect(res.statement.account).toMatchObject({ bankId: '260', branchId: '0001', accountId: '1234567-8' });
+    expect([res.statement.startDate, res.statement.endDate]).toEqual(['2026-01-01', '2026-01-31']);
+    expect(res.statement.openingBalance).toBe(10000);
+    expect(res.statement.closingBalance).toBe(40000);
+    expect(closes(res.statement)).toBe(true);
+  });
+});
+
 describe('extração: caracteres sem mapeamento Unicode', () => {
   it('vira hífen entre dígitos e some quando solto', () => {
     const [line] = pageToLines({
