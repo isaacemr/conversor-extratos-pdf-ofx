@@ -28,10 +28,12 @@ export default function App() {
               <p className="text-xs text-slate-500">PDF ⇄ OFX para contabilidade e finanças</p>
             </div>
           </div>
-          <div className="flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-800">
-            <Icon.Lock size={14} />
+          {/* No celular o selo desce para a linha de baixo; o logo fica sempre no canto superior direito. */}
+          <div className="order-last flex w-full items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-800 lg:order-none lg:ml-auto lg:w-auto">
+            <Icon.Lock size={14} className="shrink-0" />
             <span>Processamento 100% local: seus arquivos não saem do navegador</span>
           </div>
+          <img src="./logo.png" alt="Logo" width={59} height={48} className="h-12 w-auto shrink-0" />
         </div>
       </header>
 
