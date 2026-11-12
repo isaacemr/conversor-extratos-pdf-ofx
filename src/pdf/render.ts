@@ -18,7 +18,7 @@ const RED: [number, number, number] = [185, 28, 28];
 const GREEN: [number, number, number] = [21, 128, 61];
 const DARK: [number, number, number] = [30, 41, 59];
 const MUTED: [number, number, number] = [100, 116, 139];
-const ACCENT: [number, number, number] = [15, 118, 110];
+const ACCENT: [number, number, number] = [10, 91, 63]; // #0A5B3F
 
 /**
  * As fontes padrão do PDF usam WinAnsi (Latin-1 + alguns símbolos). Troca o que não cabe
